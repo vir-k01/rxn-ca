@@ -60,8 +60,12 @@ def get_scored_rxns(rxn_set: ReactionSet,
             for t, r in zip(temps, results):
                 lib.add_rxns_at_temp(r, t)
     else:
+        
         if rxns_at_temps is None:
-            rxns_at_temps = rxn_set.compute_at_temperatures(temps)
+            if len(temps) > 1:
+                rxns_at_temps = rxn_set.compute_at_temperatures(temps)
+            else:
+                rxns_at_temps = {temps[0]: rxn_set}
         
         for t in temps:
             scorer = scorer_class(temp=t, phase_set=phase_set, **scorer_kwargs)
