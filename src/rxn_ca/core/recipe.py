@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from .heating import HeatingSchedule
 from typing import Dict, List
 from ..utilities.helpers import format_chem_sys
-from ..reactions.scorers.core import TammanHuttigScoreErf, TammanHuttigScoreExponential, TammanHuttigScoreSoftplus, GibbsErfScore, TammanStrict
+from ..reactions.scorers.core import TammanHuttigScoreErf, TammanHuttigScoreExponential, TammanHuttigScoreSoftplus, GibbsErfScore, TammanStrict, TammanHuttigStrict
 from ..phases.solid_phase_set import process_composition_dict, process_composition_list
 
 import json
@@ -18,6 +18,7 @@ class ScoreTypes(str, Enum):
     GIBBS_ERF_SCORE = "GIBBS_ERF_SCORE"
     VIR_SCORER = "VIR_SCORER"
     TAMMAN_STRICT = "TAMMAN_STRICT"
+    TAMMAN_HUTTIG_STRICT = "TAMMAN_HUTTIG_STRICT"
 
 
 _SCORE_TYPE_MAP = {
@@ -26,6 +27,7 @@ _SCORE_TYPE_MAP = {
     ScoreTypes.TAMMAN_HUTTIG_SOFTPLUS_GIBBS_SOFTPLUS: TammanHuttigScoreSoftplus,
     ScoreTypes.GIBBS_ERF_SCORE: GibbsErfScore,
     ScoreTypes.TAMMAN_STRICT: TammanStrict,
+    ScoreTypes.TAMMAN_HUTTIG_STRICT: TammanHuttigStrict,
 }
 
 
