@@ -185,7 +185,9 @@ def _run_single_realization(
     if compress:
         result_doc = compress_doc(result_doc, num_steps)
     
-    return (recipe_index, realization_id, result_doc.results[0], result_doc.final_simulation)
+    # In analysis-only mode the trajectory is an ObservedResult in observed_results.
+    results = result_doc.observed_results if result_doc.observed_results else result_doc.results
+    return (recipe_index, realization_id, results[0], result_doc.final_simulation)
 
 
 def run_multi_recipe_parallel_ray(
@@ -277,14 +279,15 @@ def run_multi_recipe_parallel_ray(
     
     # Execute all tasks (Ray handles scheduling and load balancing)
     results = ray.get(task_refs)
-    final_simulations = [res[3] for res in results]
-    
-    # Group results by recipe
+
+    # Group results (and final simulations) by recipe
     recipe_results = {}
-    for recipe_idx, _, result, _ in results:
+    final_simulations = {}
+    for recipe_idx, _, result, final_sim in results:
         if recipe_idx not in recipe_results:
             recipe_results[recipe_idx] = []
         recipe_results[recipe_idx].append(result)
+        final_simulations[recipe_idx] = final_sim
     
     result_docs = []
     for recipe_idx, recipe in enumerate(recipes):
@@ -294,12 +297,15 @@ def run_multi_recipe_parallel_ray(
         
         print(f"Recipe {recipe_idx}: {num_good}/{num_total} successful realizations")
         
+        # In analysis-only mode each realization returns an ObservedResult, which
+        # belongs in observed_results rather than results.
+        result_key = "observed_results" if kwargs.get("analysis_only") else "results"
         result_doc = RxnCAResultDoc(
             recipe=recipe,
-            results=good_results,
             reaction_library=reaction_libraries[recipe_idx],
             phases=reaction_libraries[recipe_idx].phases,
-            final_simulation=final_simulations[recipe_idx]
+            final_simulation=final_simulations.get(recipe_idx),
+            **{result_key: good_results},
         )
         result_docs.append(result_doc)
     
