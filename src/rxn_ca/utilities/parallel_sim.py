@@ -2,7 +2,7 @@ from ..core.recipe import ReactionRecipe
 
 from ..reactions import ReactionLibrary
 from ..phases import SolidPhaseSet
-from ..computing.schemas.ca_result_schema import RxnCAResultDoc, compress_doc, get_metadata_from_results
+from ..computing.schemas.ca_result_schema import RxnCAResultDoc, compress_doc
 
 from rxn_network.reactions.reaction_set import ReactionSet
 from pylattica.core import Simulation
@@ -179,8 +179,6 @@ def _run_single_realization(
         initial_simulation=initial_sim,
         **sim_kwargs
     )
-    
-    result_doc.metadata = get_metadata_from_results(result_doc.results)
     
     if compress:
         result_doc = compress_doc(result_doc, num_steps)
