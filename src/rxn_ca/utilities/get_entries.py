@@ -9,6 +9,26 @@ from rxn_ca.phases.utils import remove_phases_from_entry_set, remove_theoretical
 
 from typing import List
 
+
+def _restore_ensured_phases(stable_entries, entry_set, ensure_phases):
+    """Add back the lowest-energy entry of each ensured formula that the
+    metastability cutoff removed from stable_entries."""
+    ensure_set = {Composition(f).reduced_formula for f in ensure_phases}
+    missing = {}
+    for e in entry_set:
+        formula = e.composition.reduced_formula
+        if formula in ensure_set and (formula not in missing
+                                      or e.energy_per_atom < missing[formula].energy_per_atom):
+            missing[formula] = e
+    if not missing:
+        return stable_entries
+    for e in stable_entries:
+        missing.pop(e.composition.reduced_formula, None)
+    for e in missing.values():
+        stable_entries.add(e)
+    return stable_entries
+
+
 def get_entries(chem_sys: str,
                 metastability_cutoff: float = 0.1,
                 ensure_phases: List[str] = [],
@@ -51,6 +71,9 @@ def get_entries(chem_sys: str,
     )
 
     stable_entries = entry_set.filter_by_stability(metastability_cutoff)
+    # filter_by_stability has no include list, so an ensured phase above the cutoff
+    # (e.g. one DFT places too high) would be dropped here; put it back
+    stable_entries = _restore_ensured_phases(stable_entries, entry_set, ensure_phases)
 
     if exclude_theoretical_phases:
         solid_phase_set = SolidPhaseSet.from_entry_set(stable_entries)

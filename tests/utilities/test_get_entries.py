@@ -107,6 +107,9 @@ class _FakeMPRester:
 
 
 class _Processed:
+    def __iter__(self):
+        return iter(())
+
     def filter_by_stability(self, cutoff):
         return "stable entries"
 
@@ -155,3 +158,40 @@ def test_custom_entries_without_structures_fail_before_the_download(monkeypatch)
 
     with pytest.raises(TypeError, match="ComputedStructureEntry"):
         get_entries("Li-O", custom_entries=[ComputedEntry("Li2O", -14.0)])
+
+
+# --- ensure_phases must survive the metastability cutoff, not only the
+# theoretical filter. The stub entry set keeps entries at or below the cutoff.
+
+class _HullEntrySet(set):
+    def __init__(self, entries, e_above_hull):
+        super().__init__(entries)
+        self.e_above_hull = e_above_hull
+
+    def filter_by_stability(self, cutoff):
+        return _HullEntrySet({e for e in self if self.e_above_hull[e.entry_id] <= cutoff}, self.e_above_hull)
+
+
+def _run_hull(monkeypatch, entries, e_above_hull, **kwargs):
+    monkeypatch.setattr(get_entries_module, "MPRester", lambda: _FakeMPRester(entries))
+    monkeypatch.setattr(get_entries_module, "process_entries",
+                        lambda all_entries, *a, **kw: _HullEntrySet(all_entries, e_above_hull))
+    return get_entries_module.get_entries("Cl-O-Y", **kwargs)
+
+
+def test_ensure_phases_survive_the_metastability_cutoff(monkeypatch):
+    entries = [ComputedEntry("Y2O3", -40.0, entry_id="a"), ComputedEntry("YOCl", -20.0, entry_id="b"),
+               ComputedEntry("YOCl", -19.0, entry_id="c")]
+
+    out = _run_hull(monkeypatch, entries, {"a": 0.0, "b": 0.115, "c": 0.4},
+                    metastability_cutoff=0.03, ensure_phases=["YOCl"])
+
+    assert sorted(e.entry_id for e in out) == ["a", "b"]  # lowest-energy YOCl only
+
+
+def test_unensured_phases_above_the_cutoff_stay_dropped(monkeypatch):
+    entries = [ComputedEntry("Y2O3", -40.0, entry_id="a"), ComputedEntry("YOCl", -20.0, entry_id="b")]
+
+    out = _run_hull(monkeypatch, entries, {"a": 0.0, "b": 0.115}, metastability_cutoff=0.03)
+
+    assert sorted(e.entry_id for e in out) == ["a"]
