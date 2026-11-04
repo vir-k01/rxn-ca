@@ -124,6 +124,19 @@ def perturbed_scores(reactions_at: Callable[[int], List], scorer_at: Callable[[i
     return PerturbedScores(deltas, temps, s, s0)
 
 
+def library_reactions(rxn_set, temp: int, phase_set) -> List:
+    """The reactions of an rxn_network ReactionSet at `temp`, in library id order.
+
+    Mirrors rxn_ca.reactions.score_rxns: reactions with only gas reactants are not in the library.
+    """
+    rset = rxn_set.set_new_temperature(temp)
+    out = []
+    for rxn in rset.get_rxns():
+        if any(c.reduced_formula not in phase_set.gas_phases for c in rxn.reactants):
+            out.append(rxn)
+    return out
+
+
 def perturbed_library(library: ReactionLibrary, scores: PerturbedScores, k: int) -> ReactionLibrary:
     """Copy of the library with sample k applied: energies shifted by delta_k and scores replaced."""
     tix = {int(T): i for i, T in enumerate(scores.temps)}
