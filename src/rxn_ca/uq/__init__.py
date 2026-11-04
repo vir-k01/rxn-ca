@@ -15,6 +15,8 @@ hybrid method does this instead:
    the ensemble statistics in time.
 
 The calibration is per condition: it does not transfer between recipes, scorers or energy models.
+
+For jobflow, use rxn_ca.computing.jobs.HybridUQMaker (a Flow that runs the simulations with MultiRxnCAMaker).
 """
 
 from .perturb import (
@@ -39,6 +41,7 @@ from .hybrid import (
     HybridResult,
     calibrate_traces,
     cheap_ensemble,
+    observed_trace,
     run_anchor,
     run_baselines,
     run_hybrid_uq,
@@ -65,6 +68,7 @@ __all__ = [
     "HybridResult",
     "calibrate_traces",
     "cheap_ensemble",
+    "observed_trace",
     "run_anchor",
     "run_baselines",
     "run_hybrid_uq",

@@ -100,28 +100,33 @@ def select_anchors(final_target: np.ndarray, quantiles: Sequence[float] = QUANTI
     return sorted({int(order[int(q / 100 * (n - 1))]) for q in quantiles})
 
 
+def observed_trace(obs, schedule, phase_set, phases: Sequence[str]) -> np.ndarray:
+    """Mass-fraction trace [n_sweeps+1, P] of one analysis-only realization observed once per sweep."""
+    from ..analysis.bulk_reaction_analyzer import BulkReactionAnalyzer
+    from ..analysis.phase_volume_observer import VOLUMES
+
+    steps = BulkReactionAnalyzer([obs], phase_set, schedule).loaded_step_idxs
+    n_expected = len(sweep_temperatures(schedule)) + 1
+    if len(steps) != n_expected:
+        raise ValueError(f"realization has {len(steps)} observations, expected {n_expected} (one per sweep: "
+                         "run with analysis_only=True and compress_freq = number of sites)")
+    vol = np.array([[obs.observation_at(s)[VOLUMES].get(p, 0.0) for p in phases] for s in steps])
+    return mass_fractions(vol, phases, phase_set.volumes)
+
+
 def run_anchor(recipe: ReactionRecipe, library: ReactionLibrary, scores: PerturbedScores, k: int,
                phases: Optional[Sequence[str]] = None, rep: int = 0) -> np.ndarray:
     """One real simulation with sample k applied. Returns its mass-fraction trace [n_sweeps+1, P].
 
     Runs analysis_only with one observation per sweep, so it is as light as a normal production run.
     """
-    from ..analysis.bulk_reaction_analyzer import BulkReactionAnalyzer
-    from ..analysis.phase_volume_observer import VOLUMES
     from ..utilities.single_sim import run_single_sim
 
     phases = list(phases) if phases is not None else solid_phases(library.phases)
     lib_k = perturbed_library(library, scores, k)
-    n_sites = recipe.simulation_size ** 3
     doc = run_single_sim(_single(recipe, f"{recipe.name}__anchor_k{k}_r{rep}"), reaction_lib=lib_k,
-                         phase_set=lib_k.phases, analysis_only=True, compress_freq=n_sites)
-    obs = doc.observed_results[0]
-    steps = BulkReactionAnalyzer([obs], lib_k.phases, recipe.heating_schedule).loaded_step_idxs
-    n_expected = len(sweep_temperatures(recipe.heating_schedule)) + 1
-    if len(steps) != n_expected:
-        raise ValueError(f"anchor run has {len(steps)} observations, expected {n_expected} (one per sweep)")
-    vol = np.array([[obs.observation_at(s)[VOLUMES].get(p, 0.0) for p in phases] for s in steps])
-    return mass_fractions(vol, phases, lib_k.phases.volumes)
+                         phase_set=lib_k.phases, analysis_only=True, compress_freq=recipe.simulation_size ** 3)
+    return observed_trace(doc.observed_results[0], recipe.heating_schedule, lib_k.phases, phases)
 
 
 def _smooth_t(x: np.ndarray, w: int) -> np.ndarray:
