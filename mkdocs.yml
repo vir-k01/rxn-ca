@@ -32,6 +32,7 @@ nav:
   - Guides:
       - Basic Usage: guides/basic-usage.md
       - Using Jobflow: guides/jobflow.md
+      - Hybrid UQ: guides/hybrid-uq.md
   - CLI Reference: cli.md
 
 markdown_extensions:
