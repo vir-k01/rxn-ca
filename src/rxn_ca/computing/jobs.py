@@ -2,7 +2,12 @@ from ..core.recipe import ReactionRecipe
 from ..reactions import ReactionLibrary
 from ..computing.schemas.multi_ca_result_schema import MultiRxnCAResultDoc
 from ..computing.schemas.ca_result_schema import RxnCAResultDoc
+from ..computing.schemas.uq import HybridUQCheapDoc, HybridUQResultDoc
 from ..utilities.parallel_sim import run_multi_recipe_parallel_ray
+from ..utilities.uq import (anchor_recipe, baseline_recipe, calibration, cheap_analysis, n_sites,
+                            score_energy_samples)
+from ..uq.hybrid import GATE_SD, QUANTILES
+from ..uq.perturb import DEFAULT_SIGMA
 from pylattica.core import Simulation
 from jobflow import job, Flow, Maker
 from dataclasses import dataclass, field
@@ -139,74 +144,78 @@ class MultiRxnCAMaker(Maker):
 # Hybrid UQ: phase-trace distributions under reaction-energy errors (method in rxn_ca.uq)
 # ---------------------------------------------------------------------------------------------------------
 
+UQ_SCORES_FILE = "uq_scores.npz"
+UQ_CHEAP_FILE = "uq_cheap.npz"
+UQ_SAMPLES_FILE = "hybrid_uq_samples.npz"
+UQ_RESULT_FILE = "hybrid_uq_result.json"
+
+
 @job
 def score_energy_samples_job(reaction_library: ReactionLibrary, base_reactions, recipe: ReactionRecipe,
-                             n_samples: int = 500, sigma: float = 0.015, scorer_kwargs: dict = None,
+                             n_samples: int = 500, sigma: float = DEFAULT_SIGMA, scorer_kwargs: dict = None,
                              num_workers: int = None) -> str:
-    """Score the library under n_samples seeded energy-error samples. Returns the path of the scores npz."""
-    from ..utilities.uq import score_energy_samples
+    """Score the library under n_samples energy-error samples. Returns the path of the scores npz."""
     return score_energy_samples(reaction_library, base_reactions, recipe.get_score_class(),
-                                os.path.join(os.getcwd(), "uq_scores.npz"), n_samples=n_samples, sigma=sigma,
+                                os.path.abspath(UQ_SCORES_FILE), n_samples=n_samples, sigma=sigma,
                                 scorer_kwargs=scorer_kwargs, num_workers=num_workers)
 
 
 @job(data=[ReactionLibrary])
 def hybrid_uq_cheap_job(baseline_doc: MultiRxnCAResultDoc, reaction_library: ReactionLibrary, scores_file: str,
-                        target: str, quantiles: tuple = (2, 25, 75, 98), gate_sd: float = 0.02):
-    """Cheap ensemble from the baseline runs; picks the anchor samples and builds their libraries."""
-    from ..utilities.uq import cheap_analysis
-    return cheap_analysis(baseline_doc, reaction_library, scores_file, target,
-                          os.path.join(os.getcwd(), "uq_cheap.npz"), quantiles=quantiles, gate_sd=gate_sd)
+                        target: str, quantiles: tuple = QUANTILES, gate_sd: float = GATE_SD) -> HybridUQCheapDoc:
+    """Cheap ensemble from the baseline runs. Picks the anchor samples and builds their libraries."""
+    return cheap_analysis(baseline_doc, reaction_library, scores_file, target, os.path.abspath(UQ_CHEAP_FILE),
+                          quantiles=quantiles, gate_sd=gate_sd)
 
 
 @job
-def hybrid_uq_calibration_job(cheap_doc, anchor_doc: MultiRxnCAResultDoc, recipe: ReactionRecipe,
-                              save_samples: bool = True, metadata: dict = None):
-    """Width calibration of the cheap ensemble through the anchor runs; smoothed summaries."""
-    from ..utilities.uq import calibration
+def hybrid_uq_calibration_job(cheap_doc: HybridUQCheapDoc, anchor_doc: MultiRxnCAResultDoc,
+                              recipe: ReactionRecipe, save_samples: bool = True,
+                              metadata: dict = None) -> HybridUQResultDoc:
+    """Width calibration of the cheap ensemble through the anchor runs, and the smoothed summaries."""
     doc = calibration(cheap_doc, anchor_doc, recipe,
-                      samples_file=os.path.join(os.getcwd(), "hybrid_uq_samples.npz") if save_samples else None,
-                      metadata=metadata)
-    doc.to_file("hybrid_uq_result.json")
+                      samples_file=os.path.abspath(UQ_SAMPLES_FILE) if save_samples else None, metadata=metadata)
+    doc.to_file(UQ_RESULT_FILE)
     return doc
 
 
 @dataclass
 class HybridUQMaker(Maker):
     """
-    Flow for the hybrid UQ of one recipe + reaction library: how the phase traces spread when every reaction
-    energy carries an error ~ N(0, sigma). Method in rxn_ca.uq; the calibration belongs to this one condition.
+    Hybrid UQ of one recipe + reaction library: the spread of the phase traces when every reaction energy
+    carries an error ~ N(0, sigma). The method is in rxn_ca.uq. The calibration belongs to this one condition.
 
-    Jobs, in order:
-    1. (only if no scores file is given) score_energy_samples_job: scores under n_samples energy samples.
-    2. MultiRxnCAMaker (Ray): n_baselines unperturbed full-history realizations.
-    3. hybrid_uq_cheap_job: cheap ensemble for every sample; picks anchor samples at the quantiles of the
-       target's final cheap fraction (none if it barely moves) and builds their perturbed libraries.
-    4. MultiRxnCAMaker (Ray): anchor_reps analysis-only realizations of each anchor library.
-    5. hybrid_uq_calibration_job: width calibration and smoothed summaries -> HybridUQResultDoc.
+    The flow:
+    1. score_energy_samples_job (only without a scores file): scores under n_samples energy samples.
+    2. MultiRxnCAMaker: n_baselines unperturbed realizations with full history.
+    3. hybrid_uq_cheap_job: cheap ensemble; anchor samples at the quantiles of the target's final fraction
+       (none if it barely moves) and their perturbed libraries.
+    4. MultiRxnCAMaker: anchor_reps analysis-only realizations of each anchor library.
+    5. hybrid_uq_calibration_job: width calibration and summaries -> HybridUQResultDoc.
 
     Parameters
     ----------
-    n_samples (int): energy samples when scoring here. Default 500.
-    sigma (float): energy error per reaction (eV/atom) when scoring here. Default 0.015.
-    n_baselines (int): unperturbed full-history realizations. Default 5.
+    n_samples (int): energy samples, when scoring in the flow. Default 500.
+    sigma (float): energy error per reaction in eV/atom, when scoring in the flow. Default 0.015.
+    scorer_kwargs (dict): extra kwargs for the recipe's scorer class, when scoring in the flow.
+    n_baselines (int): unperturbed realizations. Default 5.
     anchor_reps (int): realizations per anchor sample. Default 2.
-    quantiles (tuple): quantiles (%) where anchors are placed. Default (2, 25, 75, 98).
+    quantiles (tuple): quantiles (%) of the target's final cheap fraction where anchors go. Default (2, 25, 75, 98).
     gate_sd (float): no anchors if the target's final cheap fraction has a std below this. Default 0.02.
-    scorer_kwargs (dict): extra kwargs for the recipe's scorer class when scoring here.
-    num_workers, memory_per_task_gb, cpus_per_task: passed to both MultiRxnCAMakers (and the scoring job).
-    save_samples (bool): write hybrid_uq_samples.npz (every sample's traces) in the calibration job's directory.
+    num_workers (int): cores for the simulations and the scoring. Default None (all cores on the node).
+    memory_per_task_gb (float), cpus_per_task (int): passed to both MultiRxnCAMakers.
+    save_samples (bool): write every sample's traces to hybrid_uq_samples.npz. Default True.
     metadata (dict): stored on the result doc.
     """
 
     name: str = "HybridUQ"
     n_samples: int = 500
-    sigma: float = 0.015
+    sigma: float = DEFAULT_SIGMA
+    scorer_kwargs: dict = field(default_factory=dict)
     n_baselines: int = 5
     anchor_reps: int = 2
-    quantiles: tuple = (2, 25, 75, 98)
-    gate_sd: float = 0.02
-    scorer_kwargs: dict = field(default_factory=dict)
+    quantiles: tuple = QUANTILES
+    gate_sd: float = GATE_SD
     num_workers: int = None
     memory_per_task_gb: float = None
     cpus_per_task: int = 1
@@ -216,41 +225,41 @@ class HybridUQMaker(Maker):
     def make(self, recipe: ReactionRecipe, reaction_library: ReactionLibrary, target: str,
              scores_file: str = None, base_reactions=None) -> Flow:
         """
-        recipe: the recipe to run. reaction_library: the scored library it runs with.
+        recipe, reaction_library: the condition to run.
         target: the phase the anchors are chosen on (usually the recipe's target product).
-        scores_file: a PerturbedScores npz for this library (rxn_ca.uq.perturbed_scores). If None, the scores
-            are computed in the flow from base_reactions with the recipe's scorer class.
-        base_reactions: the rxn_network ReactionSet the library was scored from (needed without scores_file).
+        scores_file: PerturbedScores npz for this library. Without it, the flow scores the library itself
+            from base_reactions (the rxn_network ReactionSet the library was scored from).
         """
-        from ..utilities.uq import anchor_recipe, baseline_recipe, n_sites
-
+        if scores_file is None and base_reactions is None:
+            raise ValueError("give either scores_file or base_reactions")
         jobs = []
-        ray_kw = dict(num_workers=self.num_workers, memory_per_task_gb=self.memory_per_task_gb,
-                      cpus_per_task=self.cpus_per_task)
         if scores_file is None:
-            if base_reactions is None:
-                raise ValueError("give either scores_file or base_reactions")
-            score = score_energy_samples_job(reaction_library, base_reactions, recipe, n_samples=self.n_samples,
-                                             sigma=self.sigma, scorer_kwargs=self.scorer_kwargs,
-                                             num_workers=self.num_workers)
-            score.name = f"{self.name} scores"
-            jobs.append(score)
-            scores_file = score.output
+            scores = score_energy_samples_job(reaction_library, base_reactions, recipe, n_samples=self.n_samples,
+                                              sigma=self.sigma, scorer_kwargs=self.scorer_kwargs,
+                                              num_workers=self.num_workers)
+            jobs.append(self._named(scores, "scores"))
+            scores_file = scores.output
 
-        # full per-step history is needed for the event records: no compression, no plots
-        baselines = MultiRxnCAMaker(name=f"{self.name} baselines", multi_rxn_type=MultiRxnType.MULTI_RECIPE,
-                                    compress=False, compute_plots=False, **ray_kw).make(
+        # The cheap estimator needs every per-step diff: no compression, no plots.
+        baselines = self._multi("baselines", MultiRxnType.MULTI_RECIPE, compress=False, compute_plots=False).make(
             [baseline_recipe(recipe, self.n_baselines)], reaction_library)
-        cheap = hybrid_uq_cheap_job(baselines.output, reaction_library, scores_file, target,
-                                    quantiles=self.quantiles, gate_sd=self.gate_sd)
-        cheap.name = f"{self.name} cheap ensemble"
-        # one observation per sweep, analysis-only
-        anchors = MultiRxnCAMaker(name=f"{self.name} anchors", multi_rxn_type=MultiRxnType.MULTI_LIB,
-                                  **ray_kw).make(
+        cheap = self._named(hybrid_uq_cheap_job(baselines.output, reaction_library, scores_file, target,
+                                                quantiles=self.quantiles, gate_sd=self.gate_sd), "cheap ensemble")
+        # Anchors only need the phase volumes, observed once per sweep.
+        anchors = self._multi("anchors", MultiRxnType.MULTI_LIB).make(
             anchor_recipe(recipe, self.anchor_reps), cheap.output.anchor_libraries,
             analysis_only=True, compress_freq=n_sites(recipe))
-        calib = hybrid_uq_calibration_job(cheap.output, anchors.output, recipe, save_samples=self.save_samples,
-                                          metadata=self.metadata)
-        calib.name = f"{self.name} calibration"
+        calib = self._named(hybrid_uq_calibration_job(cheap.output, anchors.output, recipe,
+                                                      save_samples=self.save_samples, metadata=self.metadata),
+                            "calibration")
         jobs += [baselines, cheap, anchors, calib]
         return Flow(jobs, output=calib.output, name=self.name)
+
+    def _multi(self, label: str, multi_rxn_type: MultiRxnType, **kwargs) -> MultiRxnCAMaker:
+        return MultiRxnCAMaker(name=f"{self.name} {label}", multi_rxn_type=multi_rxn_type,
+                               num_workers=self.num_workers, memory_per_task_gb=self.memory_per_task_gb,
+                               cpus_per_task=self.cpus_per_task, **kwargs)
+
+    def _named(self, j, label: str):
+        j.name = f"{self.name} {label}"
+        return j
