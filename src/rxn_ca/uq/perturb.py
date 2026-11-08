@@ -7,7 +7,9 @@ temperature, opposite for a reaction and its reverse:
   (eV/atom), independent across phases. A reaction's error follows exactly from its stoichiometry,
   delta_r = sum_c nu_c n_c d_c / N_r (nu_c: coefficient, n_c: atoms per formula, N_r: atoms in the reaction,
   as rxn_network normalizes energy_per_atom), so reactions that share a phase get correlated errors.
-  sigma is one float for every solid phase, or a dict phase -> sigma (unnamed phases get 0).
+  sigma is one float for every solid phase, or a dict phase -> sigma (unnamed phases get 0). rho in [0, 1]
+  sets how correlated the phase errors are (0: independent; 1 with equal sigmas: one shared offset, which
+  cancels in balanced reactions).
 - per reaction (sample_deltas): every reaction gets an independent error ~ N(0, sigma^2).
 
 Draws are seeded from (sample, phase) or (sample, reaction), so the same sample number gives the same error
@@ -74,19 +76,28 @@ def phase_sigmas(phases: Sequence[str], sigma: Union[float, Mapping[str, float]]
 
 def sample_phase_deltas(reactions: Sequence, n_samples: int,
                         sigma: Union[float, Mapping[str, float]] = DEFAULT_SIGMA, gas_phases: Sequence[str] = (),
-                        first_sample: int = 0):
-    """Per-reaction errors from independent per-phase errors. Returns (deltas (n_samples, R), sigmas per phase).
+                        rho: float = 0.0, first_sample: int = 0):
+    """Per-reaction errors from per-phase errors. Returns (deltas (n_samples, R), sigmas per phase).
 
     reactions: rxn_network ComputedReactions in library id order (only compositions, coefficients and
         num_atoms are used, so any temperature works).
     sigma: eV/atom; one float for all non-gas phases, or a dict phase -> sigma (see phase_sigmas).
+    rho: correlation between the phase errors, in [0, 1]. Each sample draws one shared z and one z_p per
+        phase, and d_p = sigma_p (sqrt(rho) z + sqrt(1 - rho) z_p). rho = 0: independent phases. rho = 1 with
+        equal sigmas: every phase is off by the same amount, which cancels in every balanced reaction without
+        unperturbed phases (gases).
     """
+    if not 0.0 <= rho <= 1.0:
+        raise ValueError("rho must be in [0, 1]")
     phases = sorted({c.reduced_formula for r in reactions for c in r.compositions})
     sig = phase_sigmas(phases, sigma, gas_phases)
     pix = {p: i for i, p in enumerate(phases)}
-    # d_p(k): seeded from (k, phase), so a phase gets the same draw in every library that contains it
-    d = np.array([[_draw(k, p, sig[p]) if sig[p] > 0 else 0.0 for p in phases]
-                  for k in range(first_sample, first_sample + n_samples)])
+    s_vec = np.array([sig[p] for p in phases])
+    ks = range(first_sample, first_sample + n_samples)
+    # z_p(k) seeded from (k, phase), z(k) from (k, shared key): the same draws in every library (paired samples)
+    zp = np.array([[_draw(k, p, 1.0) for p in phases] for k in ks])
+    z = np.array([_draw(k, "__shared_phase_error__", 1.0) for k in ks])[:, None]
+    d = s_vec[None] * (np.sqrt(rho) * z + np.sqrt(1.0 - rho) * zp)
     # delta_r = sum_c nu_c n_c d_c / N_r
     M = np.zeros((len(phases), len(reactions)))
     for j, r in enumerate(reactions):
@@ -109,22 +120,29 @@ class PerturbedScores:
     s:      (S, nT, R) perturbed scores
     s0:     (nT, R) unperturbed scores (must equal the library's competitiveness)
     phase_sigma: sigma per phase (eV/atom) when the deltas came from sample_phase_deltas, else None
+    phase_correlation: rho used by sample_phase_deltas, else None
     """
     deltas: np.ndarray
     temps: np.ndarray
     s: np.ndarray
     s0: np.ndarray
     phase_sigma: Optional[Dict[str, float]] = None
+    phase_correlation: Optional[float] = None
 
     def save(self, path):
-        extra = {"phase_sigma": np.array(json.dumps(self.phase_sigma))} if self.phase_sigma is not None else {}
+        extra = {}
+        if self.phase_sigma is not None:
+            extra["phase_sigma"] = np.array(json.dumps(self.phase_sigma))
+        if self.phase_correlation is not None:
+            extra["phase_correlation"] = np.array(self.phase_correlation)
         np.savez_compressed(path, deltas=self.deltas, temps=self.temps, s=self.s, s0=self.s0, **extra)
 
     @classmethod
     def load(cls, path):
         z = np.load(path)
         sig = json.loads(str(z["phase_sigma"])) if "phase_sigma" in z.files else None
-        return cls(z["deltas"], z["temps"], z["s"], z["s0"], sig)
+        rho = float(z["phase_correlation"]) if "phase_correlation" in z.files else None
+        return cls(z["deltas"], z["temps"], z["s"], z["s0"], sig, rho)
 
     @property
     def n_samples(self):
@@ -132,7 +150,8 @@ class PerturbedScores:
 
     def subset(self, ks) -> "PerturbedScores":
         ks = np.asarray(ks, dtype=int)
-        return PerturbedScores(self.deltas[ks], self.temps, self.s[ks], self.s0, self.phase_sigma)
+        return PerturbedScores(self.deltas[ks], self.temps, self.s[ks], self.s0, self.phase_sigma,
+                               self.phase_correlation)
 
     def check_library(self, library: ReactionLibrary, rtol: float = 1e-6):
         """Raise if s0 does not match the library's stored competitiveness (reaction ids misaligned)."""

@@ -153,10 +153,12 @@ UQ_RESULT_FILE = "hybrid_uq_result.json"
 @job
 def score_energy_samples_job(reaction_library: ReactionLibrary, base_reactions, recipe: ReactionRecipe,
                              n_samples: int = 500, sigma: Union[float, Dict[str, float]] = DEFAULT_SIGMA,
-                             scorer_kwargs: dict = None, num_workers: int = None) -> str:
+                             phase_correlation: float = 0.0, scorer_kwargs: dict = None,
+                             num_workers: int = None) -> str:
     """Score the library under n_samples per-phase energy-error samples. Returns the path of the scores npz."""
     return score_energy_samples(reaction_library, base_reactions, recipe.get_score_class(),
                                 os.path.abspath(UQ_SCORES_FILE), n_samples=n_samples, sigma=sigma,
+                                rho=phase_correlation,
                                 scorer_kwargs=scorer_kwargs, num_workers=num_workers)
 
 
@@ -198,7 +200,10 @@ class HybridUQMaker(Maker):
     n_samples (int): energy samples, when scoring in the flow. Default 500.
     sigma (float or dict): energy error per phase in eV/atom, when scoring in the flow. A float applies to every
         solid phase (gases get 0); a dict {phase: sigma} sets the named phases, the rest get 0. Errors are
-        independent between phases; each reaction's error follows from its stoichiometry. Default 0.015.
+        independent between phases unless phase_correlation > 0; each reaction's error follows from its
+        stoichiometry. Default 0.015.
+    phase_correlation (float): correlation between phase errors, 0 to 1, when scoring in the flow. 0: independent;
+        1 with equal sigmas: every phase off by the same amount, which cancels in balanced reactions. Default 0.
     scorer_kwargs (dict): extra kwargs for the recipe's scorer class, when scoring in the flow.
     n_baselines (int): unperturbed realizations. Default 5.
     anchor_reps (int): realizations per anchor sample. Default 2.
@@ -213,6 +218,7 @@ class HybridUQMaker(Maker):
     name: str = "HybridUQ"
     n_samples: int = 500
     sigma: Union[float, Dict[str, float]] = DEFAULT_SIGMA
+    phase_correlation: float = 0.0
     scorer_kwargs: dict = field(default_factory=dict)
     n_baselines: int = 5
     anchor_reps: int = 2
@@ -237,7 +243,8 @@ class HybridUQMaker(Maker):
         jobs = []
         if scores_file is None:
             scores = score_energy_samples_job(reaction_library, base_reactions, recipe, n_samples=self.n_samples,
-                                              sigma=self.sigma, scorer_kwargs=self.scorer_kwargs,
+                                              sigma=self.sigma, phase_correlation=self.phase_correlation,
+                                              scorer_kwargs=self.scorer_kwargs,
                                               num_workers=self.num_workers)
             jobs.append(self._named(scores, "scores"))
             scores_file = scores.output

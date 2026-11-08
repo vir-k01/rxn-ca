@@ -13,7 +13,8 @@ class HybridUQCheapDoc(BaseSchema):
     The per-sample cheap traces are in cheap_file (npz: cheap [S, T, P], baseline [T, P], stress [S], phases).
     anchor_libraries[i] is the library with energy sample anchor_ks[i] applied; it is what the anchor runs use.
     gated is True when the target's final cheap fraction barely moves: then there are no anchors.
-    phase_sigma: energy error per phase (eV/atom) the samples were drawn with, if per-phase (else None).
+    phase_sigma: energy error per phase (eV/atom) the samples were drawn with, if per-phase (else None),
+    and phase_correlation the correlation between phase errors.
     """
     target: str
     n_samples: int
@@ -28,6 +29,7 @@ class HybridUQCheapDoc(BaseSchema):
     stress_mean: float
     stress_p95: float
     phase_sigma: Optional[Dict[str, float]] = None
+    phase_correlation: Optional[float] = None
     run_dir: str = None
 
 
@@ -39,7 +41,8 @@ class HybridUQResultDoc(BaseSchema):
     (temperature[i] is the temperature of trace point i). Phases that never reach 0.002 are left out of the
     trace fields. final_per_sample holds every phase's calibrated final fraction for every energy sample.
     The full per-sample traces are in samples_file (npz). phase_sigma: energy error per phase (eV/atom) the
-    samples were drawn with, if per-phase (else None).
+    samples were drawn with, if per-phase (else None), and phase_correlation the correlation between
+    phase errors.
     """
     recipe: ReactionRecipe
     target: str
@@ -61,5 +64,6 @@ class HybridUQResultDoc(BaseSchema):
     stress_p95: float
     samples_file: Optional[str] = None
     phase_sigma: Optional[Dict[str, float]] = None
+    phase_correlation: Optional[float] = None
     metadata: dict = None
     run_dir: str = None
