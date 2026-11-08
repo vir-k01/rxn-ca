@@ -7,7 +7,7 @@ temperature, opposite for a reaction and its reverse:
   (eV/atom), independent across phases. A reaction's error follows exactly from its stoichiometry,
   delta_r = sum_c nu_c n_c d_c / N_r (nu_c: coefficient, n_c: atoms per formula, N_r: atoms in the reaction,
   as rxn_network normalizes energy_per_atom), so reactions that share a phase get correlated errors.
-  sigma is one float for every solid phase, or a dict phase -> sigma.
+  sigma is one float for every solid phase, or a dict phase -> sigma (unnamed phases get 0).
 - per reaction (sample_deltas): every reaction gets an independent error ~ N(0, sigma^2).
 
 Draws are seeded from (sample, phase) or (sample, reaction), so the same sample number gives the same error
@@ -60,15 +60,12 @@ def sample_deltas(stoichs: Sequence[Mapping[str, float]], n_samples: int, sigma:
 
 def phase_sigmas(phases: Sequence[str], sigma: Union[float, Mapping[str, float]] = DEFAULT_SIGMA,
                  gas_phases: Sequence[str] = ()) -> Dict[str, float]:
-    """sigma per phase (eV/atom). A float applies to every phase not in gas_phases (gases get 0). A dict must
-    name every non-gas phase; gases it does not name get 0."""
-    gases = set(gas_phases)
+    """sigma per phase (eV/atom). A float applies to every phase not in gas_phases (gases get 0). A dict gives
+    each named phase its sigma; phases it does not name get 0 (no error)."""
     if isinstance(sigma, Mapping):
-        missing = sorted(p for p in phases if p not in gases and p not in sigma)
-        if missing:
-            raise ValueError(f"no sigma given for phases {missing}")
         out = {p: float(sigma.get(p, 0.0)) for p in phases}
     else:
+        gases = set(gas_phases)
         out = {p: (0.0 if p in gases else float(sigma)) for p in phases}
     if any(v < 0 for v in out.values()):
         raise ValueError("sigma must be >= 0")

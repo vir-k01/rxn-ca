@@ -197,7 +197,7 @@ class HybridUQMaker(Maker):
     ----------
     n_samples (int): energy samples, when scoring in the flow. Default 500.
     sigma (float or dict): energy error per phase in eV/atom, when scoring in the flow. A float applies to every
-        solid phase; a dict {phase: sigma} must name every solid phase (gases default to 0). Errors are
+        solid phase (gases get 0); a dict {phase: sigma} sets the named phases, the rest get 0. Errors are
         independent between phases; each reaction's error follows from its stoichiometry. Default 0.015.
     scorer_kwargs (dict): extra kwargs for the recipe's scorer class, when scoring in the flow.
     n_baselines (int): unperturbed realizations. Default 5.
