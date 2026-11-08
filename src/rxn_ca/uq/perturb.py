@@ -1,9 +1,17 @@
-"""Energy perturbations: draw per-reaction energy errors and re-score a library with them.
+"""Energy perturbations: draw energy errors and re-score a library with them.
 
-Each sample k gives every reaction r an error delta_r(k) ~ N(0, sigma) in eV/atom of reaction. The error is
-the same at every temperature, and a reaction and its reverse get opposite errors. The draw is seeded from
-(k, reaction), so the same sample number gives the same error in every energy model, scorer and recipe
-(paired samples).
+Two error models, both giving per-reaction errors delta_r (eV/atom of reaction), the same at every
+temperature, opposite for a reaction and its reverse:
+
+- per phase (the default, sample_phase_deltas): every phase p gets its own error d_p ~ N(0, sigma_p^2)
+  (eV/atom), independent across phases. A reaction's error follows exactly from its stoichiometry,
+  delta_r = sum_c nu_c n_c d_c / N_r (nu_c: coefficient, n_c: atoms per formula, N_r: atoms in the reaction,
+  as rxn_network normalizes energy_per_atom), so reactions that share a phase get correlated errors.
+  sigma is one float for every solid phase, or a dict phase -> sigma.
+- per reaction (sample_deltas): every reaction gets an independent error ~ N(0, sigma^2).
+
+Draws are seeded from (sample, phase) or (sample, reaction), so the same sample number gives the same error
+in every energy model, scorer and recipe (paired samples).
 
 Scores are recomputed with the real scorer objects, so any scorer works (TammanScore, DiffusionScorer, ...).
 Only the scored reaction energy is shifted; phase energies (and so a DiffusionScorer's chemical potential
@@ -12,15 +20,16 @@ diagram) are not.
 from __future__ import annotations
 
 import copy
+import json
 import zlib
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Mapping, Sequence
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
 from ..reactions import ReactionLibrary, ScoredReaction, ScoredReactionSet
 
-DEFAULT_SIGMA = 0.015   # eV/atom, per reaction energy
+DEFAULT_SIGMA = 0.015   # eV/atom
 
 
 def canonical_key(stoich: Mapping[str, float]):
@@ -49,6 +58,46 @@ def sample_deltas(stoichs: Sequence[Mapping[str, float]], n_samples: int, sigma:
                      for k in range(first_sample, first_sample + n_samples)])
 
 
+def phase_sigmas(phases: Sequence[str], sigma: Union[float, Mapping[str, float]] = DEFAULT_SIGMA,
+                 gas_phases: Sequence[str] = ()) -> Dict[str, float]:
+    """sigma per phase (eV/atom). A float applies to every phase not in gas_phases (gases get 0). A dict must
+    name every non-gas phase; gases it does not name get 0."""
+    gases = set(gas_phases)
+    if isinstance(sigma, Mapping):
+        missing = sorted(p for p in phases if p not in gases and p not in sigma)
+        if missing:
+            raise ValueError(f"no sigma given for phases {missing}")
+        out = {p: float(sigma.get(p, 0.0)) for p in phases}
+    else:
+        out = {p: (0.0 if p in gases else float(sigma)) for p in phases}
+    if any(v < 0 for v in out.values()):
+        raise ValueError("sigma must be >= 0")
+    return out
+
+
+def sample_phase_deltas(reactions: Sequence, n_samples: int,
+                        sigma: Union[float, Mapping[str, float]] = DEFAULT_SIGMA, gas_phases: Sequence[str] = (),
+                        first_sample: int = 0):
+    """Per-reaction errors from independent per-phase errors. Returns (deltas (n_samples, R), sigmas per phase).
+
+    reactions: rxn_network ComputedReactions in library id order (only compositions, coefficients and
+        num_atoms are used, so any temperature works).
+    sigma: eV/atom; one float for all non-gas phases, or a dict phase -> sigma (see phase_sigmas).
+    """
+    phases = sorted({c.reduced_formula for r in reactions for c in r.compositions})
+    sig = phase_sigmas(phases, sigma, gas_phases)
+    pix = {p: i for i, p in enumerate(phases)}
+    # d_p(k): seeded from (k, phase), so a phase gets the same draw in every library that contains it
+    d = np.array([[_draw(k, p, sig[p]) if sig[p] > 0 else 0.0 for p in phases]
+                  for k in range(first_sample, first_sample + n_samples)])
+    # delta_r = sum_c nu_c n_c d_c / N_r
+    M = np.zeros((len(phases), len(reactions)))
+    for j, r in enumerate(reactions):
+        for c, nu in zip(r.compositions, r.coefficients):
+            M[pix[c.reduced_formula], j] += float(nu) * c.num_atoms / r.num_atoms
+    return d @ M, sig
+
+
 def stoich_of(rxn) -> Dict[str, float]:
     """formula -> coefficient (reactants negative) of a pymatgen / rxn_network reaction."""
     return {c.reduced_formula: float(v) for c, v in zip(rxn.compositions, rxn.coefficients)}
@@ -62,19 +111,23 @@ class PerturbedScores:
     temps:  (nT,) temperatures, K
     s:      (S, nT, R) perturbed scores
     s0:     (nT, R) unperturbed scores (must equal the library's competitiveness)
+    phase_sigma: sigma per phase (eV/atom) when the deltas came from sample_phase_deltas, else None
     """
     deltas: np.ndarray
     temps: np.ndarray
     s: np.ndarray
     s0: np.ndarray
+    phase_sigma: Optional[Dict[str, float]] = None
 
     def save(self, path):
-        np.savez_compressed(path, deltas=self.deltas, temps=self.temps, s=self.s, s0=self.s0)
+        extra = {"phase_sigma": np.array(json.dumps(self.phase_sigma))} if self.phase_sigma is not None else {}
+        np.savez_compressed(path, deltas=self.deltas, temps=self.temps, s=self.s, s0=self.s0, **extra)
 
     @classmethod
     def load(cls, path):
         z = np.load(path)
-        return cls(z["deltas"], z["temps"], z["s"], z["s0"])
+        sig = json.loads(str(z["phase_sigma"])) if "phase_sigma" in z.files else None
+        return cls(z["deltas"], z["temps"], z["s"], z["s0"], sig)
 
     @property
     def n_samples(self):
@@ -82,7 +135,7 @@ class PerturbedScores:
 
     def subset(self, ks) -> "PerturbedScores":
         ks = np.asarray(ks, dtype=int)
-        return PerturbedScores(self.deltas[ks], self.temps, self.s[ks], self.s0)
+        return PerturbedScores(self.deltas[ks], self.temps, self.s[ks], self.s0, self.phase_sigma)
 
     def check_library(self, library: ReactionLibrary, rtol: float = 1e-6):
         """Raise if s0 does not match the library's stored competitiveness (reaction ids misaligned)."""

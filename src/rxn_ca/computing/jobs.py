@@ -11,7 +11,7 @@ from ..uq.perturb import DEFAULT_SIGMA
 from pylattica.core import Simulation
 from jobflow import job, Flow, Maker
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List, Union
 import os
 from enum import Enum
 
@@ -152,9 +152,9 @@ UQ_RESULT_FILE = "hybrid_uq_result.json"
 
 @job
 def score_energy_samples_job(reaction_library: ReactionLibrary, base_reactions, recipe: ReactionRecipe,
-                             n_samples: int = 500, sigma: float = DEFAULT_SIGMA, scorer_kwargs: dict = None,
-                             num_workers: int = None) -> str:
-    """Score the library under n_samples energy-error samples. Returns the path of the scores npz."""
+                             n_samples: int = 500, sigma: Union[float, Dict[str, float]] = DEFAULT_SIGMA,
+                             scorer_kwargs: dict = None, num_workers: int = None) -> str:
+    """Score the library under n_samples per-phase energy-error samples. Returns the path of the scores npz."""
     return score_energy_samples(reaction_library, base_reactions, recipe.get_score_class(),
                                 os.path.abspath(UQ_SCORES_FILE), n_samples=n_samples, sigma=sigma,
                                 scorer_kwargs=scorer_kwargs, num_workers=num_workers)
@@ -196,7 +196,9 @@ class HybridUQMaker(Maker):
     Parameters
     ----------
     n_samples (int): energy samples, when scoring in the flow. Default 500.
-    sigma (float): energy error per reaction in eV/atom, when scoring in the flow. Default 0.015.
+    sigma (float or dict): energy error per phase in eV/atom, when scoring in the flow. A float applies to every
+        solid phase; a dict {phase: sigma} must name every solid phase (gases default to 0). Errors are
+        independent between phases; each reaction's error follows from its stoichiometry. Default 0.015.
     scorer_kwargs (dict): extra kwargs for the recipe's scorer class, when scoring in the flow.
     n_baselines (int): unperturbed realizations. Default 5.
     anchor_reps (int): realizations per anchor sample. Default 2.
@@ -210,7 +212,7 @@ class HybridUQMaker(Maker):
 
     name: str = "HybridUQ"
     n_samples: int = 500
-    sigma: float = DEFAULT_SIGMA
+    sigma: Union[float, Dict[str, float]] = DEFAULT_SIGMA
     scorer_kwargs: dict = field(default_factory=dict)
     n_baselines: int = 5
     anchor_reps: int = 2

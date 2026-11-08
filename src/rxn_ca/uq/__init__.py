@@ -4,7 +4,8 @@ The question: if every reaction energy in the library carries an error delta_r ~
 simulated phase traces move? Running hundreds of perturbed simulations per condition is too expensive, so the
 hybrid method does this instead:
 
-1. ``perturb``: draw the energy errors and re-score the library with the real scorer for every sample.
+1. ``perturb``: draw the energy errors (per phase by default, or per reaction) and re-score the library with the
+   real scorer for every sample.
 2. ``events``: run a few unperturbed (baseline) simulations with full history and record, per sweep, how many
    times each reaction was chosen and what volume change it caused.
 3. ``reweight``: the cheap estimator. Reweight the recorded events by how much each sample changes the
@@ -25,7 +26,9 @@ from .perturb import (
     canonical_key,
     perturbed_library,
     perturbed_scores,
+    phase_sigmas,
     sample_deltas,
+    sample_phase_deltas,
 )
 from .events import EventRecord, extract_events
 from .reweight import (
@@ -55,7 +58,9 @@ __all__ = [
     "canonical_key",
     "perturbed_library",
     "perturbed_scores",
+    "phase_sigmas",
     "sample_deltas",
+    "sample_phase_deltas",
     "EventRecord",
     "extract_events",
     "forward_lr",

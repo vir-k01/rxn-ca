@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 import multiprocessing as mp
 import os
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -21,7 +21,7 @@ from ..uq.events import extract_events, sweep_temperatures
 from ..uq.hybrid import (GATE_SD, QUANTILES, HybridResult, calibrate_traces, cheap_ensemble, observed_trace,
                          select_anchors, summarize)
 from ..uq.perturb import (DEFAULT_SIGMA, PerturbedScores, library_reactions, perturbed_library,
-                          perturbed_scores, sample_deltas, stoich_of)
+                          perturbed_scores, sample_phase_deltas)
 
 # Worker state for the scoring pool, set in the parent before it forks.
 _G: dict = {}
@@ -48,16 +48,18 @@ def _score_task(T: int) -> PerturbedScores:
 
 
 def score_energy_samples(library: ReactionLibrary, base_reactions, score_class, out_file: str,
-                         n_samples: int = 500, sigma: float = DEFAULT_SIGMA, scorer_kwargs: Optional[dict] = None,
-                         num_workers: Optional[int] = None) -> str:
+                         n_samples: int = 500, sigma: Union[float, Dict[str, float]] = DEFAULT_SIGMA,
+                         scorer_kwargs: Optional[dict] = None, num_workers: Optional[int] = None) -> str:
     """Score every library reaction under n_samples seeded energy-error samples; one temperature per process.
 
-    base_reactions: the rxn_network ReactionSet the library was scored from. score_class: its scorer class.
-    Writes a PerturbedScores npz to out_file, checks it against the library, and returns out_file.
+    The errors are per phase (sample_phase_deltas): sigma in eV/atom, one float for every solid phase or a
+    dict phase -> sigma. base_reactions: the rxn_network ReactionSet the library was scored from.
+    score_class: its scorer class. Writes a PerturbedScores npz to out_file, checks it against the library,
+    and returns out_file.
     """
     temps = sorted(int(t) for t in library.temps)
-    stoichs = [stoich_of(r) for r in library_reactions(base_reactions, temps[0], library.phases)]
-    deltas = sample_deltas(stoichs, n_samples, sigma)
+    deltas, sig = sample_phase_deltas(library_reactions(base_reactions, temps[0], library.phases), n_samples,
+                                      sigma, gas_phases=library.phases.gas_phases)
     _G.clear()
     _G.update(rxn_set=base_reactions, phase_set=library.phases, score_class=score_class,
               scorer_kwargs=scorer_kwargs or {}, deltas=deltas)
@@ -69,7 +71,8 @@ def score_energy_samples(library: ReactionLibrary, base_reactions, score_class, 
         parts = [_score_task(T) for T in temps]
     _G.clear()
     scores = PerturbedScores(deltas, np.array(temps, dtype=np.int32),
-                             np.concatenate([p.s for p in parts], 1), np.concatenate([p.s0 for p in parts], 0))
+                             np.concatenate([p.s for p in parts], 1), np.concatenate([p.s0 for p in parts], 0),
+                             phase_sigma=sig)
     scores.check_library(library)
     scores.save(out_file)
     return out_file
@@ -107,7 +110,8 @@ def cheap_analysis(baseline_multi_doc, library: ReactionLibrary, scores_file: st
         cheap_file=os.path.abspath(out_file), anchor_ks=ks,
         anchor_libraries=[perturbed_library(library, scores, k) for k in ks], gated=not ks,
         cheap_final_target_mean=float(mf[:, -1, ti].mean()), cheap_final_target_std=float(mf[:, -1, ti].std()),
-        stress_mean=float(stress.mean()), stress_p95=float(np.percentile(stress, 95)), run_dir=os.getcwd())
+        stress_mean=float(stress.mean()), stress_p95=float(np.percentile(stress, 95)),
+        phase_sigma=scores.phase_sigma, run_dir=os.getcwd())
 
 
 def _per_phase(arr: np.ndarray, phases: Sequence[str], keep: Sequence[int]) -> Dict[str, List[float]]:
@@ -149,5 +153,5 @@ def calibration(cheap_doc: HybridUQCheapDoc, anchor_multi_doc, recipe: ReactionR
         gated=cheap_doc.gated, anchor_ks=list(cheap_doc.anchor_ks), anchor_reps=n_reps,
         anchor_final={p: [round(float(t[-1, i]), 5) for t in traces] for i, p in enumerate(phases)},
         stress_mean=float(stress.mean()), stress_p95=float(np.percentile(stress, 95)),
-        samples_file=os.path.abspath(samples_file) if samples_file else None, metadata=metadata,
-        run_dir=os.getcwd())
+        samples_file=os.path.abspath(samples_file) if samples_file else None, phase_sigma=cheap_doc.phase_sigma,
+        metadata=metadata, run_dir=os.getcwd())
